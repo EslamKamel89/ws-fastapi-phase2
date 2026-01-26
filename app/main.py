@@ -1,8 +1,11 @@
 import asyncio
+import json
 from contextlib import asynccontextmanager
 
 import redis.asyncio as redis
 from fastapi import FastAPI, WebSocket
+
+from .types import *
 
 redis_client = redis.Redis(host="localhost", port=6379, decode_responses=True)
 REDIS_CHANNEL = "ws:messages"
@@ -15,10 +18,14 @@ async def redis_listener():
     async for message in pubsub.listen():
         if message["type"] != "message":
             continue
-        payload = message["data"]
-        for sockets in active_connections.values():
-            for ws in sockets:
-                await ws.send_text(payload)
+        data: Message = json.loads(message["data"])
+        payload = data["payload"]
+        sender = data["sender"]
+        message_type = data["type"]
+        if message_type == "broadcast":
+            for sockets in active_connections.values():
+                for ws in sockets:
+                    await ws.send_text(payload)
 
 
 @asynccontextmanager
@@ -60,7 +67,12 @@ async def websocket_endpoint(websocket: WebSocket):
             print("start while loop")
             data = await websocket.receive_text()
             # await websocket.send_text(f"Echo: {data}")
-            await redis_client.publish(REDIS_CHANNEL, f"Echo: {data}")
+            message: Message = {
+                "type": "broadcast",
+                "sender": user_id,
+                "payload": f"Echo: {data}",
+            }
+            await redis_client.publish(REDIS_CHANNEL, json.dumps(message))
             print("end while loop")
     finally:
         active_connections[user_id].remove(websocket)
