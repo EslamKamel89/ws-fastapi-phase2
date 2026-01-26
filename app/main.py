@@ -1,8 +1,36 @@
+import asyncio
+from contextlib import asynccontextmanager
+
+import redis.asyncio as redis
 from fastapi import FastAPI, WebSocket
 
-app = FastAPI(title="Phase 2 websocket course")
-
+redis_client = redis.Redis(host="localhost", port=6379, decode_responses=True)
+REDIS_CHANNEL = "ws:messages"
 active_connections: dict[str, list[WebSocket]] = {}
+
+
+async def redis_listener():
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(REDIS_CHANNEL)
+    async for message in pubsub.listen():
+        if message["type"] != "message":
+            continue
+        payload = message["data"]
+        for sockets in active_connections.values():
+            for ws in sockets:
+                await ws.send_text(payload)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(redis_listener())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+app = FastAPI(title="Phase 2 websocket course", lifespan=lifespan)
 
 
 @app.get("/")
@@ -31,7 +59,8 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             print("start while loop")
             data = await websocket.receive_text()
-            await websocket.send_text(f"Echo: {data}")
+            # await websocket.send_text(f"Echo: {data}")
+            await redis_client.publish(REDIS_CHANNEL, f"Echo: {data}")
             print("end while loop")
     finally:
         active_connections[user_id].remove(websocket)
