@@ -30,9 +30,8 @@ async def redis_listener():
         payload = f"{sender['name']}: {data['payload']}" if sender else data["payload"]
         message_type = data["type"]
         if message_type == "broadcast":
-            for sockets in connection_manager.connections.values():
-                for ws in sockets:
-                    await ws.send_text(payload)
+            for socket in connection_manager.sockets:
+                await socket.send_text(payload)
 
 
 @asynccontextmanager
@@ -74,9 +73,7 @@ async def websocket_endpoint(websocket: WebSocket):
         return
     await websocket.accept()
     await set_user_online(user_id)
-    if user_id not in connection_manager.connections:
-        connection_manager.connections[user_id] = []
-    connection_manager.connections[user_id].append(websocket)
+    connection_manager.connect(user_id, websocket)
     try:
         while True:
             print("start while loop")
@@ -91,9 +88,7 @@ async def websocket_endpoint(websocket: WebSocket):
             await redis_client.publish(REDIS_CHANNEL, json.dumps(message))
             print("end while loop")
     finally:
-        connection_manager.connections[user_id].remove(websocket)
-        if len(connection_manager.connections[user_id]) == 0:
-            del connection_manager.connections[user_id]
+        connection_manager.disconnect(user_id, websocket)
 
 
 def get_user_id(name: str | None, password: str | None) -> str | None:
