@@ -5,12 +5,13 @@ from contextlib import asynccontextmanager
 import redis.asyncio as redis
 from fastapi import FastAPI, WebSocket
 
+from .connection_manager import ConnectionManager
 from .types import *
 
+connection_manager = ConnectionManager()
 redis_client = redis.Redis(host="localhost", port=6379, decode_responses=True)
 REDIS_CHANNEL = "ws:messages"
 PRESENCE_TTL = 30  # seconds
-active_connections: dict[str, list[WebSocket]] = {}
 USERS: list[User] = [
     {"password": "123", "id": "user_1", "name": "alice"},
     {"password": "456", "id": "user_2", "name": "pop"},
@@ -29,7 +30,7 @@ async def redis_listener():
         payload = f"{sender['name']}: {data['payload']}" if sender else data["payload"]
         message_type = data["type"]
         if message_type == "broadcast":
-            for sockets in active_connections.values():
+            for sockets in connection_manager.connections.values():
                 for ws in sockets:
                     await ws.send_text(payload)
 
@@ -54,7 +55,7 @@ async def home():
             "connections_count_local_to_this_worker": len(sockets),
             "is_online": bool(await redis_client.exists(f"presence:user:{user_id}")),
         }
-        for user_id, sockets in active_connections.items()
+        for user_id, sockets in connection_manager.connections.items()
     ]
     return {"status": "ok", "connections": connections}
 
@@ -73,9 +74,9 @@ async def websocket_endpoint(websocket: WebSocket):
         return
     await websocket.accept()
     await set_user_online(user_id)
-    if user_id not in active_connections:
-        active_connections[user_id] = []
-    active_connections[user_id].append(websocket)
+    if user_id not in connection_manager.connections:
+        connection_manager.connections[user_id] = []
+    connection_manager.connections[user_id].append(websocket)
     try:
         while True:
             print("start while loop")
@@ -90,9 +91,9 @@ async def websocket_endpoint(websocket: WebSocket):
             await redis_client.publish(REDIS_CHANNEL, json.dumps(message))
             print("end while loop")
     finally:
-        active_connections[user_id].remove(websocket)
-        if len(active_connections[user_id]) == 0:
-            del active_connections[user_id]
+        connection_manager.connections[user_id].remove(websocket)
+        if len(connection_manager.connections[user_id]) == 0:
+            del connection_manager.connections[user_id]
 
 
 def get_user_id(name: str | None, password: str | None) -> str | None:
